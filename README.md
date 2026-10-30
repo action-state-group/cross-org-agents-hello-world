@@ -1,7 +1,7 @@
 # Cross-org agents over HTTP: hello world
 
 Two agents in two organizations book a venue over plain HTTP. Each organization signs
-its own half of the record with its own key, and a person checks the result in a
+its own half of the booking with its own key, and a person checks the result in a
 browser with nothing to install.
 
 - **Org A** is a booking agent that a person talks to through a web form (`hello/org_a.py`, port 8001).
@@ -16,7 +16,9 @@ payment halves are settlement legs as defined in `draft-mih-agent-settlement-rec
 ## The four hops
 
 1. **Person → agent.** You submit the form. Org A seals its record of your request and
-   gives you a copy, with a link that verifies it.
+   gives it to you as a verifiable receipt. The receipt is one-sided and labeled as such:
+   only Org A signs it. A half signed by the person is roadmap. The two-sided record
+   starts at hop 2.
 2. **Agent → agent, across orgs.** Org A asks Org B for a quote. Org B seals the terms and
    answers `402 Payment Required`. Org A pays with [x402](https://github.com/x402-foundation/x402)
    on Base Sepolia (testnet USDC) and seals what its wallet saw. Org B seals what its
@@ -36,8 +38,10 @@ payment halves are settlement legs as defined in `draft-mih-agent-settlement-rec
 ## Run it (about 10 minutes)
 
 You need macOS (Apple silicon) or Linux (x86-64 or arm64), `curl`, and
-[`uv`](https://docs.astral.sh/uv/getting-started/installation/). On an Intel Mac,
-`install-capsulectl.sh` prints the `go install` command to use instead.
+[`uv`](https://docs.astral.sh/uv/getting-started/installation/). There is no prebuilt
+`capsulectl` for Intel Macs: there you also need [Go 1.27+](https://go.dev/dl/), and
+`install-capsulectl.sh` prints the `go install` command to run. Installing Go adds time
+beyond the 10 minutes.
 
 ```bash
 git clone https://github.com/action-state-group/cross-org-agents-hello-world.git
@@ -95,13 +99,17 @@ ORG_B_EVIDENCE=off ./scripts/run.sh
 ```
 
 Book again. The result page shows an "add your half" link, and the record behind it is
-one-sided. Then, acting as Org B, add Org B's half:
+one-sided. Then, acting as Org B, add Org B's half. Org B signs only what its own records
+show: the amount and transaction from its facilitator's settlement response, and the
+confirmation it sent. Hop 4 also works with `PAYMENT=none`; Org B then adds only its
+delivery half.
 
 ```bash
 uv run scripts/add_half.py "http://localhost:8001/verify#set=<id from the link>"
 ```
 
-Reload the link: both halves are there, under two keys.
+Reload the link: both halves are there, under two keys. Each org accepts a half only when
+it is signed by the key the other org publishes, so nobody else can add one in its name.
 
 ## What is checked, and by whom
 
@@ -138,13 +146,19 @@ them locally under `.state/`.
 uv run pytest
 ```
 
-The tests start both orgs as real HTTP services and run hops 1 to 4, the fallback and the
-one-byte flip. The payment goes to `tests/fake_facilitator.py`, a test double that answers
-like a facilitator whose settlement succeeded, so the tests need no funded wallet.
+The tests start both orgs as real HTTP services and run hops 1 to 4, the fallback, the
+one-byte flip, and the refusals: a half signed by a third key, and a 402 asking for more
+than the quote. When Playwright is installed (CI installs it), they also open the verify
+pages in headless Chromium and press **Flip one byte**. The payment goes to
+`tests/fake_facilitator.py`, a test double that answers like a facilitator whose
+settlement succeeded, so the tests need no funded wallet.
+
+`scripts/selftest.sh` runs this README's walkthrough on a fresh clone with payments off,
+times it, and fails past 15 minutes. CI runs it on macOS and Linux.
 
 ## Roadmap
 
-- **A person's own signature.** In hop 1, the person holds Org A's sealed record. A
+- **A person's own signature.** In hop 1, the person holds Org A's one-sided receipt. A
   half signed by the person, for example with a key held in the browser, is not built yet.
 - **An evidence skill.** `hello/evidence.py` is the one place that calls `capsulectl`. It is
   shaped so it can be packaged as an agent skill that any agent loads, but it isn't one yet.

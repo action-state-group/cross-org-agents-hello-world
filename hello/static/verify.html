@@ -21,8 +21,9 @@
 </head>
 <body>
 <h1 id="title">Verifying…</h1>
-<p class="muted">Everything below is checked here, in your browser, with the Agent Action Capsule TypeScript verifier. Nothing is installed and nothing is sent anywhere.</p>
+<p class="muted">Everything below is checked here, in your browser, with the Agent Action Capsule TypeScript verifier, which the page loads from jsDelivr. Nothing is installed, and nothing about the record is sent anywhere.</p>
 <div id="verdict" class="verdict">Loading…</div>
+<p id="note" hidden></p>
 <div id="settlement"></div>
 <h2>Records</h2>
 <table><thead><tr><th>Record</th><th>Signed by</th><th>Check</th></tr></thead><tbody id="rows"></tbody></table>
@@ -30,29 +31,34 @@
 <button id="reset" hidden>Undo</button>
 <div id="addhalf" hidden>
   <h2>Add your half</h2>
-  <p>This record is one-sided: only one party has sealed its view. If you are the other party, seal your own leg with
+  <p>This record is one-sided: only one party has signed it. If you are the other party, seal your own leg with
   <code>capsulectl seal</code> under your own key, citing this party's leg as <code>counterparty_half</code>, and POST it to
   <code id="posturl"></code> as <code>{"record": …}</code>. This repository's <code>scripts/add_half.py</code> does exactly that.</p>
 </div>
 <script type="module">
+const $ = (id) => document.getElementById(id);
+try {
 // Pinned release of the AAC TypeScript verifier, loaded as plain ES modules.
 const AAC = "https://cdn.jsdelivr.net/npm/@action-state-group/agent-action-capsule@0.10.0/dist";
 const { verifyClass1 } = await import(`${AAC}/verify.js`);
 const { verifyProducerEnvelope } = await import(`${AAC}/producer-envelope-verification.js`);
 const { verifySettlements } = await import(`${AAC}/settlement.js`);
 
-const $ = (id) => document.getElementById(id);
+
 const setId = new URLSearchParams(location.hash.slice(1)).get("set");
 const b64bytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
-const held = await (await fetch(`/sets/${encodeURIComponent(setId)}`)).json();
+const response = setId && (await fetch(`/sets/${encodeURIComponent(setId)}`));
+if (!response || !response.ok) throw new Error(setId ? "this link names no record held here" : "the link has no #set=…");
+const held = await response.json();
 const keys = {};
 for (const [role, url] of Object.entries(held.keys || {})) {
   try { keys[role] = (await (await fetch(url)).json()).public_key; } catch { /* not published */ }
 }
 $("title").textContent = held.title;
+if (held.note) { $("note").textContent = held.note; $("note").hidden = false; }
 $("posturl").textContent = `${location.origin}/sets/${setId}/legs`;
 const original = held.records.map((r) => b64bytes(r.capsule));
 let current = original.map((b) => b.slice());
@@ -92,15 +98,19 @@ async function check() {
     const words = { agreed: "both sides report the same payment", payer_stated: "only the payer has stated the payment: a claim, not an agreement", payee_stated: "only the payee has stated the payment: a claim, not an agreement", terms_only: "no payment is recorded against these terms", mismatch: "the two sides disagree", unjoined: "the two sides cannot be joined" };
     said = s ? `Payment: ${words[s.paymentState] ?? s.paymentState}${s.agreedStatus ? ` (${s.agreedStatus})` : ""}. Delivery: ${s.deliveryState}.` : "";
     $("settlement").innerHTML = `<p>${esc(said)}</p><p class="muted">Keys ${report.keyPolicyApplied ? "bound to each party by the keys they publish" : "not bound to parties: a party's published key could not be fetched"}.</p>`;
-    $("addhalf").hidden = !(s && (s.paymentState === "payer_stated" || s.paymentState === "payee_stated"));
+    // One-sided while every leg is signed by the same key: the other party can add its half.
+    $("addhalf").hidden = new Set(legs.map((c) => c.key_id)).size !== 1;
   }
   $("verdict").className = `verdict ${allOk ? "ok" : "bad"}`;
   $("verdict").textContent = allOk ? "✓ Verified: every record matches its signature." : "✗ Does not verify: a record was changed or is not signed by the key it names.";
 }
 
-$("tamper").onclick = () => {
-  // Flip one bit of one byte in the first record: the first digit of its timestamp,
-  // so the JSON still parses (2026 becomes 3026) and only the signature can catch it.
+$("tamper").onclick = async () => {
+  // Flip one bit of one byte in the first record, starting again from the original so
+  // a second click doesn't flip it back. The byte is the first digit of its timestamp,
+  // so the JSON still parses (2026 becomes 3026): the recomputed Capsule ID no longer
+  // matches the one the signature covers.
+  current[0] = original[0].slice();
   const bytes = current[0];
   const marker = new TextEncoder().encode('"timestamp":"');
   let at = 0;
@@ -108,10 +118,14 @@ $("tamper").onclick = () => {
     if (marker.every((b, j) => bytes[i + j] === b)) { at = i + marker.length; break; }
   bytes[at] ^= 0x01;
   $("reset").hidden = false;
-  check();
+  await check();
 };
 $("reset").onclick = () => { current = original.map((b) => b.slice()); $("reset").hidden = true; check(); };
-check();
+await check();
+} catch (e) {
+  $("verdict").className = "verdict bad";
+  $("verdict").textContent = `Could not check this record: ${e.message}. If the verifier failed to load, check the network connection and reload.`;
+}
 </script>
 </body>
 </html>

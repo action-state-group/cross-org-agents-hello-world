@@ -21,7 +21,7 @@ from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
 from . import evidence, legs
-from .common import STATIC, Sets, mount, settlement_legs
+from .common import STATIC, Sets, fetch_key, mount, settlement_legs
 from .x402_testnet import pay
 
 ORG = "org-a"
@@ -48,10 +48,16 @@ async def book(venue: str = Form(...), date: str = Form(...), people: int = Form
 
 
 async def run_booking(ask: dict) -> dict:
-    # Hop 1: Org A's sealed record of what the person asked for. The person keeps a copy.
+    # Hop 1: Org A's sealed record of what the person asked for: a receipt the person
+    # can verify. Only Org A signs it; a half signed by the person is roadmap.
     request_id = uuid.uuid4().hex[:16]
     request_record = evidence.seal(ORG, f"request-{request_id}", OPERATOR, payload=ask)
-    sets.create(request_id, f"Your booking request to Org A ({ask['venue']}, {ask['date']})", {"sealer": f"{SELF}/.well-known/evidence-key"})
+    sets.create(
+        request_id,
+        f"Your booking request to Org A ({ask['venue']}, {ask['date']})",
+        {"sealer": f"{SELF}/.well-known/evidence-key"},
+        note="One-sided: this is Org A's record of your request, signed by Org A only. You did not sign it.",
+    )
     sets.add(request_id, [request_record])
 
     async with httpx.AsyncClient(timeout=90) as client:
@@ -61,9 +67,13 @@ async def run_booking(ask: dict) -> dict:
         payload_octets = settle_octets = None
         if booked.status_code == 402:
             if not WALLET.exists():
-                raise HTTPException(402, "Org B asks for an x402 payment, but no testnet wallet is set up. Run `uv run scripts/wallet.py`, or run both orgs with PAYMENT=none.")
+                raise HTTPException(402, "Org B asks for an x402 payment, but no testnet wallet is set up. "
+                                         "Run `uv run scripts/wallet.py`, or run both orgs with PAYMENT=none.")
             required = json.loads(base64.b64decode(booked.headers["PAYMENT-REQUIRED"]))
-            payload_octets = await pay(required, json.loads(WALLET.read_text())["private_key"])
+            try:
+                payload_octets = await pay(required, json.loads(WALLET.read_text())["private_key"], quote["price"])
+            except ValueError as e:
+                raise HTTPException(502, f"Org A did not pay: {e}")
             booked = await client.post(quote["book_url"], headers={"PAYMENT-SIGNATURE": base64.b64encode(payload_octets).decode()})
         booked.raise_for_status()
         answer = booked.json()
@@ -76,65 +86,59 @@ async def run_booking(ask: dict) -> dict:
         if quote["terms"] is not None:
             # Org B runs evidence: answer its terms and cite its legs as counterparty halves.
             terms_id = quote["terms"]["capsule_id"]
-            sets.create(quote_id, f"Booking {quote_id} (Org A's copy)", _keys(f"{ORG_B}/.well-known/evidence-key"))
+            sets.create(quote_id, f"Booking {quote_id} (Org A's copy)", _keys())
             sets.add(quote_id, [quote["terms"], *their_legs])
         else:
             # Hop 4: Org B is a plain endpoint. Org A states the terms it accepted itself.
-            price = quote["price"]
-            terms = evidence.seal(ORG, f"terms-{quote_id}", OPERATOR, settlement=legs.terms("payer", price, evidence.json_digest(ask)))
+            terms = evidence.seal(ORG, f"terms-{quote_id}", OPERATOR, settlement=legs.terms("payer", quote["price"], evidence.json_digest(ask)))
             terms_id = terms["capsule_id"]
-            sets.create(quote_id, f"Booking {quote_id}: begun one-sided by Org A", _keys(f"{ORG_B}/.well-known/evidence-key"))
+            sets.create(quote_id, f"Booking {quote_id}: begun one-sided by Org A", _keys())
             sets.add(quote_id, [terms])
 
         cited = [r["capsule_id"] for r in their_legs]
-        mine, objects = [], {}
+        mine, objects = [], []
         if settle_octets is not None:
             settle = json.loads(settle_octets)
-            mine.append(evidence.seal(ORG, f"paid-{quote_id}", OPERATOR, references=cited,
-                                      settlement=legs.payer_observed(terms_id, quote["price"], payload_octets, settle_octets, settle, at)))
-            objects = {legs.sha256(payload_octets): payload_octets, legs.sha256(settle_octets): settle_octets}
+            # The amount is what Org A's wallet signed, not what the quote said.
+            paid = json.loads(payload_octets)["accepted"]
+            mine.append(evidence.seal(ORG, f"paid-{quote_id}", OPERATOR, references=cited, settlement=legs.payer_observed(
+                terms_id, legs.amount(paid["amount"], paid["network"], paid["asset"]), payload_octets, settle_octets, settle, at)))
+            objects = [payload_octets, settle_octets]
         mine.append(evidence.seal(ORG, f"received-{quote_id}", OPERATOR, references=cited,
                                   settlement=legs.delivered(terms_id, "payer", answer["confirmation"].encode(), at)))
         sets.add(quote_id, mine, objects)
 
         if quote["terms"] is not None:
             # Give Org B our half too, so its confirmation link shows both sides.
+            sent = {legs.sha256(o): base64.b64encode(o).decode() for o in objects}
             for record in mine:
-                (await client.post(f"{ORG_B}/sets/{quote_id}/legs", json={"record": record, "objects": _b64map(objects)})).raise_for_status()
+                (await client.post(f"{ORG_B}/sets/{quote_id}/legs", json={"record": record, "objects": sent})).raise_for_status()
 
     held = sets.get(quote_id)
-    b_key = _fetch_key(f"{ORG_B}/.well-known/evidence-key")
-    status = evidence.settlement_status(settlement_legs(held["records"]), evidence.public_key(ORG), b_key)
+    b_key = await fetch_key(f"{ORG_B}/.well-known/evidence-key")
+    try:
+        status = evidence.settlement_status(settlement_legs(held["records"]), evidence.public_key(ORG), b_key, sets.objects(quote_id))
+    except evidence.EvidenceError as e:
+        status = {"say": f"capsulectl refused the record: {e}"}
     return {
         "ask": ask,
-        "your_copy": f"{SELF}/verify#set={request_id}",
+        "receipt": f"{SELF}/verify#set={request_id}",
         "confirmation": answer["confirmation"],
         "confirmation_link": answer["link"],
         "add_half_link": None if quote["terms"] is not None else f"{SELF}/verify#set={quote_id}",
-        "org_a_set": f"{SELF}/verify#set={quote_id}",
         "status": status,
     }
 
 
-def _keys(payee_key_url: str) -> dict:
-    return {"payer": f"{SELF}/.well-known/evidence-key", "payee": payee_key_url}
-
-
-def _fetch_key(url: str) -> str | None:
-    try:
-        return httpx.get(url, timeout=10).raise_for_status().json()["public_key"]
-    except httpx.HTTPError:
-        return None
-
-
-def _b64map(objects: dict[str, bytes]) -> dict[str, str]:
-    return {k: base64.b64encode(v).decode() for k, v in objects.items()}
+def _keys() -> dict:
+    return {"payer": f"{SELF}/.well-known/evidence-key", "payee": f"{ORG_B}/.well-known/evidence-key"}
 
 
 def render(r: dict) -> str:
     e = html.escape
     rows = [
-        f'<li><b>Hop 1, your copy.</b> Org A sealed its record of your request: <a href="{e(r["your_copy"])}">verify it</a>.</li>',
+        f'<li><b>Hop 1, your receipt (one-sided).</b> Org A signed its record of your request; you did not sign it. '
+        f'<a href="{e(r["receipt"])}">Verify it</a>.</li>',
         f'<li><b>Hop 2.</b> {"Org A sealed its half; Org B sealed nothing" if r["add_half_link"] else "Org A and Org B each sealed their own half"}. '
         f'<code>capsulectl settlement status</code> says: <i>{e(r["status"].get("say", ""))}</i></li>',
     ]

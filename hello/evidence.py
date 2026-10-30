@@ -31,11 +31,19 @@ def _env() -> dict[str, str]:
     return {**os.environ, "XDG_CONFIG_HOME": str(STATE / "config")}
 
 
-def capsulectl(*args: str) -> dict:
+def capsulectl(*args: str, report_ok: bool = False) -> dict:
+    """Run capsulectl and return its JSON result. With `report_ok`, a run that exits
+    nonzero but still prints its JSON report (as `settlement status` does for a
+    non-conforming set) returns that report instead of raising."""
     proc = subprocess.run(
         [CAPSULECTL, *args], capture_output=True, text=True, env=_env(), stdin=subprocess.DEVNULL
     )
     if proc.returncode != 0:
+        if report_ok:
+            try:
+                return json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                pass
         raise EvidenceError(f"capsulectl {args[0]} failed: {proc.stderr.strip() or proc.stdout.strip()}")
     return json.loads(proc.stdout)
 
@@ -102,10 +110,17 @@ def seal(
         return json.loads(out.read_text())
 
 
-def settlement_status(records: list[dict], payer_key: str | None = None, payee_key: str | None = None) -> dict:
+def settlement_status(
+    records: list[dict], payer_key: str | None = None, payee_key: str | None = None, objects: dict[str, bytes] | None = None
+) -> dict:
     """`capsulectl settlement status` over the legs held: derives the payment and
     delivery state from whichever legs are present. With both keys it also checks
-    that each leg is sealed by the party its role names."""
+    that each leg is sealed by the party its role names. `objects` are the wrapped
+    objects' octets held, so capsulectl also checks them against the legs.
+
+    Raises EvidenceError when capsulectl refuses a record outright (for example one
+    whose bytes no longer match its signature); otherwise returns the report, whose
+    `settlement.conforming` says whether every leg passed."""
     with tempfile.TemporaryDirectory() as tmp:
         args = ["settlement", "status"]
         if payer_key and payee_key:
@@ -116,8 +131,12 @@ def settlement_status(records: list[dict], payer_key: str | None = None, payee_k
             path.write_text(json.dumps(record))
             args += ["--leg", str(path)]
             paths[str(path)] = record["capsule_id"]
+        for i, octets in enumerate((objects or {}).values()):
+            path = Path(tmp, f"object-{i}")
+            path.write_bytes(octets)
+            args += ["--object", str(path)]
         # capsulectl names each leg by its file; name it by its capsule ID instead.
-        report = json.dumps(capsulectl(*args))
+        report = json.dumps(capsulectl(*args, report_ok=True))
         for path, capsule_id in paths.items():
             report = report.replace(json.dumps(path), json.dumps(capsule_id))
         return json.loads(report)

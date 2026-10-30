@@ -16,7 +16,7 @@
 </head>
 <body>
 <h1>Org A: book a venue</h1>
-<p class="muted">Org A's agent asks Org B's venue agent for a quote, pays it on a testnet, and books it. Each org seals its own half of the record.</p>
+<p class="muted">Org A's agent asks Org B's venue agent for a quote, pays it (on a testnet, unless payments are off) and books it. You get Org A's signed receipt of your request. The two orgs each sign their own half of the booking.</p>
 <form method="post" action="/book">
   <label for="venue">Venue</label><input id="venue" name="venue" value="Hall 3" required>
   <label for="date">Date</label><input id="date" name="date" type="date" value="2026-11-04" required>

@@ -111,19 +111,20 @@ def test_x402_two_orgs_agree(tmp_path):
 
 
 def test_one_flipped_byte_fails(tmp_path):
-    from hello import evidence
-
     with services(tmp_path) as (env, a, b):
         held = set_of(links(book(a))[1])
         assert status(held["records"], env)["settlement"]["conforming"]
-        # The same flip as the browser page's button: one bit of the timestamp's first digit.
-        record = held["records"][1]
+        # The same flip as the browser page's button: the first record, one bit of its
+        # timestamp's first digit.
+        record = held["records"][0]
         capsule = bytearray(base64.b64decode(record["capsule"]))
         capsule[capsule.index(b'"timestamp":"') + len(b'"timestamp":"')] ^= 0x01
         tampered = {**record, "capsule": base64.b64encode(bytes(capsule)).decode()}
-        # capsulectl refuses a record whose bytes no longer match its signed Capsule ID.
-        with pytest.raises(evidence.EvidenceError):
-            status([held["records"][0], tampered, *held["records"][2:]], env)
+        # capsulectl reports the set non-conforming: the record's bytes no longer match
+        # the Capsule ID its signature covers.
+        report = status([tampered, *held["records"][1:]], env)["settlement"]
+        assert not report["conforming"]
+        assert {f["code"] for f in report["failures"]} & {"capsule_invalid", "envelope_invalid"}, report["failures"]
 
 
 def test_fallback_without_payment(tmp_path):
@@ -133,6 +134,48 @@ def test_fallback_without_payment(tmp_path):
         settlement = status(held["records"], env)["settlement"]["settlements"][0]
         assert settlement["payment_state"] == "terms_only"
         assert settlement["delivery_state"] == "matched"
+
+
+def test_upgrade_path_without_payment(tmp_path):
+    with services(tmp_path, payment="none", b_evidence="off") as (env, a, b):
+        add_half = links(book(a))[-1]
+        out = subprocess.run([sys.executable, str(ROOT / "scripts" / "add_half.py"), add_half],
+                             env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        assert out.returncode == 0, out.stderr + out.stdout
+        settlement = status(set_of(add_half)["records"], env)["settlement"]["settlements"][0]
+        assert settlement["payment_state"] == "terms_only"
+        assert settlement["delivery_state"] == "matched"
+
+
+def test_half_under_a_third_key_is_refused(tmp_path):
+    with services(tmp_path) as (env, a, b):
+        confirmation = links(book(a))[1]
+        held = set_of(confirmation)
+        from hello import evidence
+        from hello.common import capsule_of
+
+        # Org C copies Org B's delivery leg and seals it under its own key.
+        seed = tmp_path / "keys" / "org-c.seed"
+        pub = evidence.capsulectl("key", "generate", "--output", str(seed))["public_key"]
+        evidence.capsulectl("profile", "create", "--name", "org-c", "--type", "sqlite", "--sqlite-path", str(tmp_path / "c.db"),
+                            "--namespace", "c", "--log-id", "c-log", "--signing-key-file", str(seed), "--trusted-key", pub,
+                            "--checkpoint-signing-key-file", str(seed), "--checkpoint-trusted-key", pub)
+        delivered = next(capsule_of(r)["settlement"] for r in held["records"] if capsule_of(r)["settlement"]["leg"] == "delivered")
+        forged = evidence.seal("org-c", "forged", "venue.org-b.example", settlement={**delivered, "observed_at": evidence.now()})
+        answer = httpx.post(confirmation.split("/verify")[0] + "/sets/" + confirmation.split("set=")[1] + "/legs", json={"record": forged})
+        assert answer.status_code == 400
+        assert len(set_of(confirmation)["records"]) == len(held["records"])
+
+
+def test_payer_refuses_a_402_above_the_quote():
+    import asyncio
+
+    from hello import legs
+    from hello.x402_testnet import ASSET, NETWORK, pay, payment_required
+
+    required = payment_required("http://localhost/book/x", "0x000000000000000000000000000000000000dEaD")
+    with pytest.raises(ValueError, match="different amount"):
+        asyncio.run(pay(required, "0x" + "11" * 32, legs.amount("1", NETWORK, ASSET)))
 
 
 def test_upgrade_path_add_your_half(tmp_path):

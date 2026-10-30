@@ -31,8 +31,10 @@ sets = Sets(ORG)
 # A plain endpoint publishes a key only once it has added its first half (hop 4).
 mount(app, ORG, sets, key_published=lambda: EVIDENCE or (evidence.STATE / ORG / "evidence-adopted").exists())
 quotes: dict[str, dict] = {}
-payments = evidence.STATE / ORG / "payments"
-payments.mkdir(parents=True, exist_ok=True)
+# What Org B's own systems hold for each booking, kept even with evidence off, so it
+# can add its half later (hop 4).
+bookings = evidence.STATE / ORG / "bookings"
+bookings.mkdir(parents=True, exist_ok=True)
 
 
 def pay_to() -> str:
@@ -56,7 +58,7 @@ async def quote(request: Request):
         )
         sets.add(quote_id, [terms])
     quotes[quote_id] = {"ask": ask, "terms": terms, "price": price}
-    return {"quote_id": quote_id, "price": price, "payment": PAYMENT, "terms": terms, "book_url": f"{SELF}/book/{quote_id}"}
+    return {"quote_id": quote_id, "price": price, "terms": terms, "book_url": f"{SELF}/book/{quote_id}"}
 
 
 @app.post("/book/{quote_id}")
@@ -71,29 +73,30 @@ async def book(quote_id: str, request: Request):
         header = request.headers.get("PAYMENT-SIGNATURE")
         if not header:
             return JSONResponse(required, status_code=402, headers={"PAYMENT-REQUIRED": b64(json.dumps(required).encode())})
-        payload_octets = base64.b64decode(header)
         try:
-            settle_octets = await facilitator_settle(payload_octets, required["accepts"][0])
-        except (httpx.HTTPError, ValueError) as e:
+            settle_octets = await facilitator_settle(base64.b64decode(header, validate=True), required["accepts"][0])
+        except (httpx.HTTPError, ValueError) as e:  # binascii.Error is a ValueError
             return JSONResponse({**required, "error": str(e)}, status_code=402)
         settle = json.loads(settle_octets)
         headers["PAYMENT-RESPONSE"] = b64(settle_octets)
-        # Kept even with evidence off, so this org can add its half later (hop 4).
-        (payments / f"{quote_id}.json").write_text(json.dumps({"settle_b64": b64(settle_octets), "price": q["price"]}))
 
     confirmation = json.dumps(
         {"booking": quote_id, **q["ask"], "status": "confirmed", "paid_tx": settle["transaction"] if settle else None},
         sort_keys=True,
         separators=(",", ":"),
     )
+    receipt = {"price": q["price"], "confirmation": confirmation}
+    if settle is not None:
+        receipt["settle_b64"] = b64(settle_octets)
+    (bookings / f"{quote_id}.json").write_text(json.dumps(receipt))
     sealed = []
     if EVIDENCE:
         terms_id = q["terms"]["capsule_id"]
         at = evidence.now()
-        objects = {}
+        objects = []
         if settle is not None:
             sealed.append(evidence.seal(ORG, f"paid-{quote_id}", OPERATOR, settlement=legs.payee_observed(terms_id, q["price"], settle_octets, settle, at)))
-            objects[legs.sha256(settle_octets)] = settle_octets
+            objects.append(settle_octets)
         sealed.append(evidence.seal(ORG, f"delivered-{quote_id}", OPERATOR, settlement=legs.delivered(terms_id, "payee", confirmation.encode(), at)))
         sets.add(quote_id, sealed, objects)
     return JSONResponse(

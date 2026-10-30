@@ -8,10 +8,12 @@ disclose, and where each party publishes its key.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -41,29 +43,49 @@ class Sets:
     def put(self, set_id: str, value: dict) -> None:
         self._path(set_id).write_text(json.dumps(value, indent=1))
 
-    def create(self, set_id: str, title: str, keys: dict[str, str]) -> dict:
-        value = {"title": title, "records": [], "objects": {}, "keys": keys}
+    def create(self, set_id: str, title: str, keys: dict[str, str], note: str = "") -> dict:
+        value = {"title": title, "note": note, "records": [], "objects": {}, "keys": keys}
         self.put(set_id, value)
         return value
 
-    def add(self, set_id: str, records: list[dict] = (), objects: dict[str, bytes] | None = None) -> dict:
+    def add(self, set_id: str, records: list[dict] = (), objects: list[bytes] = ()) -> dict:
+        """Add records, and the wrapped objects some held leg names by digest."""
         value = self.get(set_id)
         held = {r["capsule_id"] for r in value["records"]}
         value["records"] += [r for r in records if r["capsule_id"] not in held]
-        for digest, octets in (objects or {}).items():
-            value["objects"][digest] = base64.b64encode(octets).decode()
+        named = wrapped_digests(value["records"])
+        for octets in objects:
+            digest = hashlib.sha256(octets).hexdigest()
+            if digest in named:
+                value["objects"][digest] = base64.b64encode(octets).decode()
         self.put(set_id, value)
         return value
+
+    def objects(self, set_id: str) -> dict[str, bytes]:
+        return {k: base64.b64decode(v) for k, v in self.get(set_id)["objects"].items()}
+
+
+def capsule_of(record: dict) -> dict:
+    return json.loads(base64.b64decode(record["capsule"]))
 
 
 def settlement_legs(records: list[dict]) -> list[dict]:
     """The records that carry a settlement member."""
-    out = []
-    for record in records:
-        capsule = json.loads(base64.b64decode(record["capsule"]))
-        if "settlement" in capsule:
-            out.append(record)
-    return out
+    return [r for r in records if "settlement" in capsule_of(r)]
+
+
+def wrapped_digests(records: list[dict]) -> set[str]:
+    return {w["digest"] for r in settlement_legs(records) for w in capsule_of(r)["settlement"].get("wrapped", [])}
+
+
+async def fetch_key(url: str) -> str | None:
+    """The key a party publishes at its /.well-known/evidence-key, or None. Async, so
+    a service can fetch its own key while handling a request."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            return (await client.get(url)).raise_for_status().json()["public_key"]
+    except (httpx.HTTPError, ValueError, KeyError):
+        return None
 
 
 def mount(app: FastAPI, org: str, sets: Sets, *, key_published=lambda: True) -> None:
@@ -82,7 +104,7 @@ def mount(app: FastAPI, org: str, sets: Sets, *, key_published=lambda: True) -> 
 
     @app.post("/sets/{set_id}/legs")
     async def add_leg(set_id: str, request: Request):
-        """The other party adds its own half: a leg it sealed under its own key."""
+        """The other party adds its own half: a leg sealed under the key it publishes."""
         body = await request.json()
         held = sets.get(set_id)
         record = body.get("record")
@@ -90,13 +112,21 @@ def mount(app: FastAPI, org: str, sets: Sets, *, key_published=lambda: True) -> 
             raise HTTPException(400, "send {\"record\": <capsulectl artifact record>}")
         if not settlement_legs([record]):
             raise HTTPException(400, "the record carries no settlement leg")
+        # Bind both roles to the keys the two orgs publish: a leg sealed under any
+        # other key is refused, so nobody can add a half in the other org's name.
+        keys = {role: await fetch_key(url) for role, url in held["keys"].items()}
+        if not (keys.get("payer") and keys.get("payee")):
+            raise HTTPException(409, "the other org publishes no key yet, so its half cannot be checked")
+        objects = [base64.b64decode(v) for v in body.get("objects", {}).values()]
         try:
-            report = evidence.settlement_status(settlement_legs(held["records"]) + [record])
+            report = evidence.settlement_status(
+                settlement_legs(held["records"]) + [record], keys["payer"], keys["payee"],
+                {**sets.objects(set_id), **{hashlib.sha256(o).hexdigest(): o for o in objects}},
+            )
         except evidence.EvidenceError as e:
             raise HTTPException(400, str(e))
         if not report["settlement"]["conforming"]:
-            raise HTTPException(400, {"refused": "the leg does not verify with the legs held", "report": report})
-        objects = {k: base64.b64decode(v) for k, v in body.get("objects", {}).items()}
+            raise HTTPException(400, {"refused": "the leg does not verify with the legs held", "report": report["settlement"]})
         sets.add(set_id, [record], objects)
         return {"added": record["capsule_id"], "say": report.get("say"), "settlement": report["settlement"]["settlements"]}
 

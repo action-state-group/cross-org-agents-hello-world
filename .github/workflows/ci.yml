@@ -11,11 +11,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - name: Install capsulectl (the README's step)
+      - name: README walkthrough on a fresh clone, timed (limit 15 minutes)
+        run: ./scripts/selftest.sh "$GITHUB_WORKSPACE"
+      - name: Install capsulectl
         run: ./scripts/install-capsulectl.sh
-      - name: Run hops 1 to 4, the fallback and the one-byte flip
-        run: uv run pytest -v
+      - name: Install Chromium for the browser tests
+        run: uv run --group browser playwright install --with-deps chromium
+      - name: Hops 1 to 4, the fallback, the refusals, and the verify page in a browser
+        run: uv run --group browser pytest -v

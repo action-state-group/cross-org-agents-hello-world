@@ -54,8 +54,9 @@ async def facilitator_settle(payload_octets: bytes, requirements: dict) -> bytes
         return settled.content
 
 
-async def pay(required: dict, private_key: str) -> bytes:
-    """Build the PAYMENT-SIGNATURE payload for a 402 answer; returns its JSON octets."""
+async def pay(required: dict, private_key: str, quoted: dict) -> bytes:
+    """Build the PAYMENT-SIGNATURE payload for a 402 answer; returns its JSON octets.
+    Pays only on Base Sepolia, and only the quoted amount of the quoted asset."""
     from eth_account import Account
     from x402.client import x402Client
     from x402.http.utils import encode_payment_signature_header, safe_base64_decode
@@ -64,6 +65,11 @@ async def pay(required: dict, private_key: str) -> bytes:
 
     if any(a.get("network") != NETWORK for a in required.get("accepts", [])):
         raise ValueError("refusing to pay on anything but Base Sepolia (eip155:84532)")
+    if any(
+        a.get("amount") != quoted["value"] or f"{a.get('network')}/erc20:{str(a.get('asset')).lower()}" != quoted["assetCode"]
+        for a in required.get("accepts", [])
+    ):
+        raise ValueError("refusing to pay: the 402 asks for a different amount or asset than the quote")
     client = register_exact_evm_client(x402Client(), Account.from_key(private_key), networks=NETWORK)
     payload = await client.create_payment_payload(PaymentRequired.model_validate(required))
     return safe_base64_decode(encode_payment_signature_header(payload)).encode()

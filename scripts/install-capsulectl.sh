@@ -9,7 +9,7 @@ NAME="capsulectl-$VERSION-$OS-$ARCH"
 BASE="https://github.com/action-state-group/capsule-cli/releases/download/$VERSION"
 mkdir -p bin
 if ! curl -fsSL -o "bin/$NAME" "$BASE/$NAME"; then
-  echo "No prebuilt capsulectl for $OS-$ARCH. Build it with Go 1.24+ instead:" >&2
+  echo "No prebuilt capsulectl for $OS-$ARCH. Build it with Go 1.27+ instead:" >&2
   echo "  GOBIN=\$PWD/bin go install github.com/action-state-group/capsule-cli/cmd/capsulectl@$VERSION" >&2
   exit 1
 fi
