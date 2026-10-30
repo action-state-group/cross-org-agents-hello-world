@@ -30,7 +30,7 @@ def _port() -> int:
 
 
 @contextmanager
-def services(tmp_path: Path, *, payment: str = "x402", b_evidence: str = "on"):
+def services(tmp_path: Path, *, payment: str = "x402", b_evidence: str = "on", extra_env: dict | None = None):
     a, b, f = _port(), _port(), _port()
     env = {
         **os.environ,
@@ -40,6 +40,7 @@ def services(tmp_path: Path, *, payment: str = "x402", b_evidence: str = "on"):
         "X402_FACILITATOR": f"http://127.0.0.1:{f}",
         "PAYMENT": payment,
         "ORG_B_EVIDENCE": b_evidence,
+        **(extra_env or {}),
     }
     for script in ("setup.py", "wallet.py"):
         subprocess.run([sys.executable, str(ROOT / "scripts" / script)], env=env, check=True, capture_output=True, stdin=subprocess.DEVNULL)
@@ -211,3 +212,42 @@ def _need_capsulectl():
         evidence.version()
     except SystemExit:
         pytest.skip("capsulectl not installed: run scripts/install-capsulectl.sh")
+
+
+def test_own_wallet_import_and_receiving_address(tmp_path):
+    from eth_account import Account
+
+    mine = Account.create()
+    env = {**os.environ, "HELLO_STATE": str(tmp_path), "PAYER_PRIVATE_KEY": mine.key.hex()}
+    out = subprocess.run([sys.executable, str(ROOT / "scripts" / "wallet.py"), "--import"],
+                         env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert out.returncode == 0 and mine.address in out.stdout, out.stderr
+    assert mine.key.hex() not in out.stdout  # the key is never printed
+    held = tmp_path / "keys" / "payer-wallet.json"
+    assert json.loads(held.read_text())["address"] == mine.address
+    assert oct(held.stat().st_mode & 0o777) == "0o600"
+
+    def wallet(*args, key):
+        return subprocess.run([sys.executable, str(ROOT / "scripts" / "wallet.py"), "--import", *args],
+                              env={**env, "PAYER_PRIVATE_KEY": key}, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+
+    other = Account.create()
+    kept = wallet(key=other.key.hex())  # an existing wallet is not replaced without --force
+    assert kept.returncode != 0 and mine.address in kept.stderr
+    assert json.loads(held.read_text())["address"] == mine.address
+    bad = wallet("--force", key="not-a-key")
+    assert bad.returncode != 0 and "not a valid private key" in bad.stderr
+    assert wallet("--force", key=other.key.hex()).returncode == 0
+    assert json.loads(held.read_text())["address"] == other.address
+    assert oct(held.stat().st_mode & 0o777) == "0o600"
+
+    typo = subprocess.run([sys.executable, "-c", "import hello.org_b"], cwd=ROOT, capture_output=True, text=True,
+                          env={**env, "ORG_B_PAY_TO": "0x1234"}, stdin=subprocess.DEVNULL)
+    assert typo.returncode != 0 and "ORG_B_PAY_TO must be" in typo.stderr
+
+    receiver = Account.create().address
+    with services(tmp_path / "run", extra_env={"ORG_B_PAY_TO": receiver}) as (env, a, b):
+        quote = httpx.post(f"{b}/quote", json={"venue": "Hall 3", "date": "2026-11-04", "people": 1, "payer_url": a}).json()
+        required = httpx.post(quote["book_url"])
+        assert required.status_code == 402
+        assert required.json()["accepts"][0]["payTo"] == receiver
