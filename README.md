@@ -65,18 +65,40 @@ uv run scripts/setup.py
 
 ### With the testnet payment
 
-Create Org A's testnet wallet. The script prints its address:
+Hop 2 pays from a wallet on Base Sepolia, the Base testnet. **Use a testnet-only wallet:
+never a key that controls real (mainnet) funds.** Either create a fresh one:
 
 ```bash
 uv run scripts/wallet.py
 ```
 
+or use your own testnet wallet. The script asks for its private key without echoing it,
+or reads it from the `PAYER_PRIVATE_KEY` environment variable:
+
+```bash
+uv run scripts/wallet.py --import
+```
+
+Either way, the script prints the address Org A pays from. The key stays in
+`.state/keys/payer-wallet.json`, which is gitignored and readable only by you. Delete that
+file to remove the key.
+
 Get free Base Sepolia USDC for that address at <https://faucet.circle.com> (choose Base
 Sepolia). You need no ETH, because the x402 facilitator pays the gas. Each booking costs
-0.01 testnet USDC. Then start both orgs:
+0.01 testnet USDC, and both orgs refuse any network but Base Sepolia.
+
+By default, Org B receives at an address `setup.py` generated. To receive at your own
+Base Sepolia address instead, set `ORG_B_PAY_TO`. That takes an address only, never a
+key. Then start both orgs:
 
 ```bash
 ./scripts/run.sh
+```
+
+To receive at your own address, start them this way instead:
+
+```bash
+ORG_B_PAY_TO=0xYourBaseSepoliaAddress ./scripts/run.sh
 ```
 
 Open <http://localhost:8001>, press **Book it**, and follow the links.
@@ -132,6 +154,8 @@ transaction hash.
 | `PAYMENT` | `x402` | `none` turns the payment off (fallback) |
 | `ORG_B_EVIDENCE` | `on` | `off` makes Org B a plain x402 endpoint that seals nothing (hop 4) |
 | `ORG_A_URL`, `ORG_B_URL` | `http://localhost:8001`, `:8002` | Where each org is reached. Use `https://` URLs when the orgs run on separate hosts. |
+| `PAYER_PRIVATE_KEY` | (unset) | Read once by `scripts/wallet.py --import`: your **testnet-only** wallet key. Never a mainnet key. |
+| `ORG_B_PAY_TO` | the address `setup.py` generated | The Base Sepolia address Org B receives at |
 | `X402_FACILITATOR` | `https://x402.org/facilitator` | The testnet facilitator Org B uses |
 | `HELLO_STATE` | `./.state` | Keys, capsulectl profiles and evidence sets (gitignored) |
 | `CAPSULECTL` | `./bin/capsulectl` | The capsulectl binary |

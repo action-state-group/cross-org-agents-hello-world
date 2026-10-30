@@ -38,7 +38,8 @@ bookings.mkdir(parents=True, exist_ok=True)
 
 
 def pay_to() -> str:
-    return json.loads((evidence.STATE / "keys" / "org-b-wallet.json").read_text())["address"]
+    # ORG_B_PAY_TO receives into your own Base Sepolia address; an address, never a key.
+    return os.environ.get("ORG_B_PAY_TO") or json.loads((evidence.STATE / "keys" / "org-b-wallet.json").read_text())["address"]
 
 
 @app.post("/quote")
