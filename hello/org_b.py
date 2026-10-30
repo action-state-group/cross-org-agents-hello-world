@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import uuid
 
 import httpx
@@ -37,9 +38,14 @@ bookings = evidence.STATE / ORG / "bookings"
 bookings.mkdir(parents=True, exist_ok=True)
 
 
+# ORG_B_PAY_TO receives into your own Base Sepolia address: an address, never a key.
+PAY_TO = os.environ.get("ORG_B_PAY_TO", "")
+if PAY_TO and not re.fullmatch(r"0x[0-9a-fA-F]{40}", PAY_TO):
+    raise SystemExit(f"ORG_B_PAY_TO must be a Base Sepolia address (0x and 40 hex digits), not {PAY_TO!r}")
+
+
 def pay_to() -> str:
-    # ORG_B_PAY_TO receives into your own Base Sepolia address; an address, never a key.
-    return os.environ.get("ORG_B_PAY_TO") or json.loads((evidence.STATE / "keys" / "org-b-wallet.json").read_text())["address"]
+    return PAY_TO or json.loads((evidence.STATE / "keys" / "org-b-wallet.json").read_text())["address"]
 
 
 @app.post("/quote")

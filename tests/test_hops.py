@@ -227,9 +227,23 @@ def test_own_wallet_import_and_receiving_address(tmp_path):
     assert json.loads(held.read_text())["address"] == mine.address
     assert oct(held.stat().st_mode & 0o777) == "0o600"
 
-    bad = subprocess.run([sys.executable, str(ROOT / "scripts" / "wallet.py"), "--import"],
-                         env={**env, "PAYER_PRIVATE_KEY": "not-a-key"}, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    def wallet(*args, key):
+        return subprocess.run([sys.executable, str(ROOT / "scripts" / "wallet.py"), "--import", *args],
+                              env={**env, "PAYER_PRIVATE_KEY": key}, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+
+    other = Account.create()
+    kept = wallet(key=other.key.hex())  # an existing wallet is not replaced without --force
+    assert kept.returncode != 0 and mine.address in kept.stderr
+    assert json.loads(held.read_text())["address"] == mine.address
+    bad = wallet("--force", key="not-a-key")
     assert bad.returncode != 0 and "not a valid private key" in bad.stderr
+    assert wallet("--force", key=other.key.hex()).returncode == 0
+    assert json.loads(held.read_text())["address"] == other.address
+    assert oct(held.stat().st_mode & 0o777) == "0o600"
+
+    typo = subprocess.run([sys.executable, "-c", "import hello.org_b"], cwd=ROOT, capture_output=True, text=True,
+                          env={**env, "ORG_B_PAY_TO": "0x1234"}, stdin=subprocess.DEVNULL)
+    assert typo.returncode != 0 and "ORG_B_PAY_TO must be" in typo.stderr
 
     receiver = Account.create().address
     with services(tmp_path / "run", extra_env={"ORG_B_PAY_TO": receiver}) as (env, a, b):

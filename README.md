@@ -65,15 +65,18 @@ uv run scripts/setup.py
 
 ### With the testnet payment
 
-Hop 2 pays from a wallet on Base Sepolia, the Base testnet. **Use a testnet-only wallet:
-never a key that controls real (mainnet) funds.** Either create a fresh one:
+Hop 2 pays from a wallet on Base Sepolia, the Base testnet. **Use a key that holds no
+real funds on any chain:** an EVM key controls the same address on mainnet too. Either
+create a fresh one:
 
 ```bash
 uv run scripts/wallet.py
 ```
 
-or use your own testnet wallet. The script asks for its private key without echoing it,
-or reads it from the `PAYER_PRIVATE_KEY` environment variable:
+or use your own testnet wallet. The script asks for its private key without echoing it.
+It can also read the key from the `PAYER_PRIVATE_KEY` environment variable, but prefer the
+prompt: `export PAYER_PRIVATE_KEY=…` lands in your shell history. The script won't replace
+a wallet you already set up unless you add `--force`.
 
 ```bash
 uv run scripts/wallet.py --import
@@ -154,8 +157,8 @@ transaction hash.
 | `PAYMENT` | `x402` | `none` turns the payment off (fallback) |
 | `ORG_B_EVIDENCE` | `on` | `off` makes Org B a plain x402 endpoint that seals nothing (hop 4) |
 | `ORG_A_URL`, `ORG_B_URL` | `http://localhost:8001`, `:8002` | Where each org is reached. Use `https://` URLs when the orgs run on separate hosts. |
-| `PAYER_PRIVATE_KEY` | (unset) | Read once by `scripts/wallet.py --import`: your **testnet-only** wallet key. Never a mainnet key. |
-| `ORG_B_PAY_TO` | the address `setup.py` generated | The Base Sepolia address Org B receives at |
+| `PAYER_PRIVATE_KEY` | (unset) | Read once by `scripts/wallet.py --import`: a key that holds no real funds on any chain. Prefer the prompt, which keeps the key out of your shell history. |
+| `ORG_B_PAY_TO` | the address `setup.py` generated | The Base Sepolia address Org B receives at (`0x` and 40 hex digits; checked at startup) |
 | `X402_FACILITATOR` | `https://x402.org/facilitator` | The testnet facilitator Org B uses |
 | `HELLO_STATE` | `./.state` | Keys, capsulectl profiles and evidence sets (gitignored) |
 | `CAPSULECTL` | `./bin/capsulectl` | The capsulectl binary |
