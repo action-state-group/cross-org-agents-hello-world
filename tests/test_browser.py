@@ -2,12 +2,18 @@
 TypeScript verifier loaded from jsDelivr exactly as an attendee's browser loads it.
 
 Needs Playwright and its Chromium (`uv run --group browser playwright install chromium`);
-skipped otherwise. CI installs both."""
+skipped otherwise, unless HELLO_REQUIRE_BROWSER=1 (set in CI), where a missing browser fails."""
+
+import os
 
 import pytest
 from test_hops import book, links, services
 
-sync_api = pytest.importorskip("playwright.sync_api")
+REQUIRED = os.environ.get("HELLO_REQUIRE_BROWSER") == "1"
+if REQUIRED:
+    import playwright.sync_api as sync_api
+else:
+    sync_api = pytest.importorskip("playwright.sync_api")
 
 
 @pytest.fixture(scope="module")
@@ -16,6 +22,8 @@ def browser():
         try:
             b = p.chromium.launch()
         except Exception as e:  # Chromium not installed
+            if REQUIRED:
+                raise
             pytest.skip(f"no Chromium for Playwright: {e}")
         yield b
         b.close()

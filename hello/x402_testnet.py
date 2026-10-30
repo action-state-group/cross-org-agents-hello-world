@@ -39,7 +39,9 @@ def payment_required(resource: str, pay_to: str) -> dict:
 async def facilitator_settle(payload_octets: bytes, requirements: dict) -> bytes:
     """Verify, then settle; returns the settlement response body as the facilitator sent it."""
     payload = json.loads(payload_octets)
-    if payload.get("accepted", {}).get("network") != NETWORK:
+    if not isinstance(payload, dict) or not isinstance(payload.get("accepted"), dict):
+        raise ValueError("PAYMENT-SIGNATURE is not an x402 v2 payment payload")
+    if payload["accepted"].get("network") != NETWORK:
         raise ValueError("only Base Sepolia (eip155:84532) is accepted")
     body = {"x402Version": 2, "paymentPayload": payload, "paymentRequirements": requirements}
     async with httpx.AsyncClient(timeout=60) as client:

@@ -23,3 +23,5 @@ jobs:
         run: uv run --group browser playwright install --with-deps chromium
       - name: Hops 1 to 4, the fallback, the refusals, and the verify page in a browser
         run: uv run --group browser pytest -v
+        env:
+          HELLO_REQUIRE_BROWSER: "1"

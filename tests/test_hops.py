@@ -154,6 +154,7 @@ def test_half_under_a_third_key_is_refused(tmp_path):
         from hello import evidence
         from hello.common import capsule_of
 
+        evidence.STATE = tmp_path  # Org C's profile lives in this test's state only
         # Org C copies Org B's delivery leg and seals it under its own key.
         seed = tmp_path / "keys" / "org-c.seed"
         pub = evidence.capsulectl("key", "generate", "--output", str(seed))["public_key"]
@@ -164,7 +165,17 @@ def test_half_under_a_third_key_is_refused(tmp_path):
         forged = evidence.seal("org-c", "forged", "venue.org-b.example", settlement={**delivered, "observed_at": evidence.now()})
         answer = httpx.post(confirmation.split("/verify")[0] + "/sets/" + confirmation.split("set=")[1] + "/legs", json={"record": forged})
         assert answer.status_code == 400
+        codes = {f["code"] for f in answer.json()["detail"]["report"]["failures"]}
+        assert "sealer_not_authorized_for_role" in codes, codes
         assert len(set_of(confirmation)["records"]) == len(held["records"])
+
+
+@pytest.mark.parametrize("header", ["W10=", "eyJhY2NlcHRlZCI6bnVsbH0=", "not base64!"])  # [], {"accepted":null}
+def test_malformed_payment_signature_gets_402(tmp_path, header):
+    with services(tmp_path) as (env, a, b):
+        quote = httpx.post(f"{b}/quote", json={"venue": "Hall 3", "date": "2026-11-04", "people": 1, "payer_url": a}).json()
+        answer = httpx.post(quote["book_url"], headers={"PAYMENT-SIGNATURE": header})
+        assert answer.status_code == 402, answer.text
 
 
 def test_payer_refuses_a_402_above_the_quote():
