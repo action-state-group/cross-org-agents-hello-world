@@ -1,0 +1,24 @@
+[project]
+name = "cross-org-agents-hello-world"
+version = "0.1.0"
+description = "Two agents in two orgs over plain HTTP, each sealing its own half of the record with capsulectl"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "httpx>=0.28",
+    "python-multipart>=0.0.9",
+    "x402[evm]==2.9.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+browser = ["playwright>=1.48"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

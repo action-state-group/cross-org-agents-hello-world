@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Booked</title>
+<style>
+  :root { --fg:#1d1d1f; --muted:#5f6368; --bg:#fff; --card:#f7f7f8; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#ececec; --muted:#a0a0a0; --bg:#151515; --card:#1e1e1e; } }
+  body { font: 16px/1.5 system-ui, sans-serif; color: var(--fg); background: var(--bg); max-width: 720px; margin: 0 auto; padding: 24px 16px; }
+  li { margin: 8px 0; } code, pre { font-size: .85em; word-break: break-all; }
+  pre { background: var(--card); padding: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>{{venue}} on {{date}}: booked</h1>
+<ul>
+{{items}}
+</ul>
+<p>Org B's confirmation, as it sent it:</p>
+<pre>{{confirmation}}</pre>
+<p><a href="/">Book another</a></p>
+</body>
+</html>

@@ -1,0 +1,27 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  hops:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: README walkthrough on a fresh clone, timed (limit 15 minutes)
+        run: ./scripts/selftest.sh "$GITHUB_WORKSPACE"
+      - name: Install capsulectl
+        run: ./scripts/install-capsulectl.sh
+      - name: Install Chromium for the browser tests
+        run: uv run --group browser playwright install --with-deps chromium
+      - name: Hops 1 to 4, the fallback, the refusals, and the verify page in a browser
+        run: uv run --group browser pytest -v
+        env:
+          HELLO_REQUIRE_BROWSER: "1"

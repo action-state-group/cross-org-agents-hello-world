@@ -6,3 +6,4 @@ __pycache__/
 .claude/
 *.seed
 *.key
+bin/
