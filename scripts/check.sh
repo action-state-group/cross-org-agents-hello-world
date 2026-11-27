@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs locally what .github/workflows/ci.yml runs on pull requests and main.
-# Stops with an error past CHECK_TIMEOUT_SECONDS (default 600, the same 10-minute limit as the CI
-# job), so a hang fails instead of holding the machine; the run itself takes about 2 minutes.
+# Stops with exit 124 within CHECK_TIMEOUT_SECONDS (default 600, the same 10-minute limit as the CI
+# job), so a hang fails instead of holding the machine; the run itself takes about 1 minute.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -18,15 +18,28 @@ set -m
 checks &
 pid=$!
 set +m  # only the checks need a group of their own; the polling below runs in ours
+
+# TERM the checks' group, give it GRACE seconds, then KILL whatever is left, so nothing
+# outlives this script even if it ignores TERM.
+GRACE=10
+stop() {
+  kill -TERM -- "-$pid" 2>/dev/null || return 0
+  local waited=0
+  while kill -0 -- "-$pid" 2>/dev/null && (( waited < GRACE )); do sleep 1; waited=$((waited + 1)); done
+  kill -KILL -- "-$pid" 2>/dev/null || true
+}
 # Ctrl-C reaches only the foreground group, so pass it (or a TERM) on to the checks.
-trap 'kill -TERM -- "-$pid" 2>/dev/null; exit 130' INT TERM
+trap 'stop; exit 130' INT TERM
+
+# The grace period comes out of the limit, so the whole run ends within it.
 limit="${CHECK_TIMEOUT_SECONDS:-600}"
 start=$SECONDS
 while kill -0 "$pid" 2>/dev/null; do
-  if (( SECONDS - start >= limit )); then
-    echo "check.sh: still running after ${limit}s, stopping it" >&2
-    kill -TERM -- "-$pid" 2>/dev/null || true
-    break
+  if (( SECONDS - start >= limit - GRACE )); then
+    echo "check.sh: still running after $((SECONDS - start))s, stopping it" >&2
+    stop
+    wait "$pid" 2>/dev/null || true
+    exit 124
   fi
   sleep 1
 done
