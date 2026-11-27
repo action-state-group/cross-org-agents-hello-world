@@ -5,13 +5,19 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  # Pull request runs of one ref replace each other, freeing the organization's shared runners;
+  # a run on main gets its own group and is never cancelled or replaced.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   hops:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # The job takes about 1.5 minutes; past 10 it has hung and fails.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
